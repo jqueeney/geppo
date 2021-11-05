@@ -1,6 +1,6 @@
 # Generalized Proximal Policy Optimization with Sample Reuse
 
-This repository is the official implementation of the reinforcement learning algorithm Generalized Proximal Policy Optimization with Sample Reuse (GePPO), which was introduced in the NeurIPS 2021 paper with the same name.
+This repository is the official implementation of the reinforcement learning algorithm Generalized Proximal Policy Optimization with Sample Reuse (GePPO), which was introduced in the [NeurIPS 2021 paper](https://arxiv.org/abs/2111.00072) with the same name.
 
 GePPO improves the sample efficiency of the popular on-policy algorithm PPO through principled sample reuse, while still retaining PPO's approximate policy improvement guarantees. GePPO is theoretically supported by a generalized policy improvement lower bound that can be approximated using data from all recent policies.
 
