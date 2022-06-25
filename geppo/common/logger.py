@@ -39,7 +39,7 @@ class Logger:
 
         return out
 
-    def dump_and_save(self,log_path,log_name):
+    def dump_and_save(self,log_path,log_name,keep_checkpoints):
         """Saves dictionary of logged data.
 
         Attempts to append logged data to existing saved data if file name
@@ -48,6 +48,7 @@ class Logger:
         Args:
             log_path (str): path where logged data should be saved
             log_name (str): name of file for saving logged data
+            keep_checkpoints (bool): keep final dict of all checkpoints
         """
         out = self.dump()
         os.makedirs(log_path,exist_ok=True)
@@ -64,6 +65,14 @@ class Logger:
                     out['train'][k] = np.concatenate((old,new),axis=0)
                 else:
                     out['train'][k] = old
+            
+            if keep_checkpoints:
+                if 'checkpoints' in import_data.keys():
+                    checkpoints = import_data['checkpoints']
+                else:
+                    checkpoints = [import_data['final']]
+                checkpoints.append(out['final'])
+                out['checkpoints'] = checkpoints
         except:
             pass
 
@@ -71,6 +80,6 @@ class Logger:
             pickle.dump(out,f)
 
     def reset(self):
-        self.param_dict = dict()
-        self.train_dict = dict()
-        self.final_dict = dict()
+        self.param_dict.clear()
+        self.train_dict.clear()
+        self.final_dict.clear()

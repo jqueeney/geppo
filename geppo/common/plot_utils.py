@@ -16,8 +16,6 @@ plot_parser.add_argument('--import_path',help='import path',
     type=str,default='./logs')
 plot_parser.add_argument('--ppo_file',help='file with PPO data',type=str)
 plot_parser.add_argument('--geppo_file',help='file with GePPO data',type=str)
-plot_parser.add_argument('--ppo_adapt_file',
-    help='file with PPO-Adapt data',type=str)
 plot_parser.add_argument('--save_path',help='save path',
     type=str,default='./figs')
 plot_parser.add_argument('--save_name',
@@ -77,26 +75,35 @@ def open_and_aggregate(filepath,filename,x,window,metric):
         with open(os.path.join(filepath,filename),'rb') as f:
             data = pickle.load(f)
         
-        window_batch = int(window / data[0]['param']['b_size'])
+        M = data[0]['param']['runner_kwargs']['M']
+        B = data[0]['param']['runner_kwargs']['B']
+        n = data[0]['param']['runner_kwargs']['n']
+        if M > 1:
+            b_size = n
+        else:
+            b_size = B * n
+        
+        window_batch = int(window / b_size)
         
         results = aggregate_sim(data,x,window_batch,metric)
     
     return results
 
-def plot_compare(ppo_data,geppo_data,ppo_adapt_data,
-    x,se_val,save_path,save_name):
+def plot_compare(ppo_data,geppo_data,x,se_val,save_path,save_name):
     """Creates and saves plot."""
     
     fig, ax = plt.subplots()
 
     ppo_color = 'C0'
     geppo_color = 'C1'
-    ppo_adapt_color = 'C2'
 
     if ppo_data is not None:
         ppo_mean = np.mean(ppo_data,axis=0)
-        ppo_std = np.std(ppo_data,axis=0,ddof=1)
-        ppo_se = ppo_std / np.sqrt(ppo_data.shape[0])
+        if ppo_data.shape[0] > 1:
+            ppo_std = np.std(ppo_data,axis=0,ddof=1)
+            ppo_se = ppo_std / np.sqrt(ppo_data.shape[0])
+        else:
+            ppo_se = np.zeros_like(ppo_mean)
 
         ax.plot(x/1e6,ppo_mean,color=ppo_color,label='PPO')
         ax.fill_between(x/1e6,
@@ -105,24 +112,16 @@ def plot_compare(ppo_data,geppo_data,ppo_adapt_data,
     
     if geppo_data is not None:
         geppo_mean = np.mean(geppo_data,axis=0)
-        geppo_std = np.std(geppo_data,axis=0,ddof=1)
-        geppo_se = geppo_std / np.sqrt(geppo_data.shape[0])
+        if geppo_data.shape[0] > 1:
+            geppo_std = np.std(geppo_data,axis=0,ddof=1)
+            geppo_se = geppo_std / np.sqrt(geppo_data.shape[0])
+        else:
+            geppo_se = np.zeros_like(geppo_mean)
 
         ax.plot(x/1e6,geppo_mean,color=geppo_color,label='GePPO')
         ax.fill_between(x/1e6,
             geppo_mean-se_val*geppo_se,geppo_mean+se_val*geppo_se,
             alpha=0.2,color=geppo_color)
-
-    if ppo_adapt_data is not None:
-        ppo_adapt_mean = np.mean(ppo_adapt_data,axis=0)
-        ppo_adapt_std = np.std(ppo_adapt_data,axis=0,ddof=1)
-        ppo_adapt_se = ppo_adapt_std / np.sqrt(ppo_adapt_data.shape[0])
-
-        ax.plot(x/1e6,ppo_adapt_mean,color=ppo_adapt_color,label='PPO-Adapt')
-        ax.fill_between(x/1e6,
-            ppo_adapt_mean-se_val*ppo_adapt_se,
-            ppo_adapt_mean+se_val*ppo_adapt_se,
-            alpha=0.2,color=ppo_adapt_color)
 
     ax.set_xlabel('Steps (M)')
     ax.legend()

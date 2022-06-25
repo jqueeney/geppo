@@ -57,7 +57,7 @@ def gae(s,sp,r,d,gamma,lam,critic):
     return adv, rtg
 
 def gae_batch(s_batch,a_batch,sp_batch,r_batch,d_batch,neglogp_batch,
-    gamma,lam,correct,is_trunc,actor,critic):
+    gamma,lam,vtrace,is_trunc,actor,critic):
     """Calculates advantage estimates for a single batch."""
     
     traj_count = len(r_batch)
@@ -72,7 +72,7 @@ def gae_batch(s_batch,a_batch,sp_batch,r_batch,d_batch,neglogp_batch,
         d_traj = d_batch[idx]
         neglogp_traj = neglogp_batch[idx]
 
-        if correct:
+        if vtrace:
             adv_traj, rtg_traj = gae_vtrace(s_traj,a_traj,sp_traj,r_traj,d_traj,
                 neglogp_traj,gamma,lam,is_trunc,actor,critic)
         else:
@@ -83,7 +83,7 @@ def gae_batch(s_batch,a_batch,sp_batch,r_batch,d_batch,neglogp_batch,
     
     return adv_batch, rtg_batch
 
-def gae_all(s_all,a_all,sp_all,r_all,d_all,neglogp_all,gamma,lam,correct,
+def gae_all(s_all,a_all,sp_all,r_all,d_all,neglogp_all,gamma,lam,vtrace,
     is_trunc,actor,critic):
     """Calculates advantage estimates for all batches."""
     
@@ -100,7 +100,7 @@ def gae_all(s_all,a_all,sp_all,r_all,d_all,neglogp_all,gamma,lam,correct,
         neglogp_batch = neglogp_all[idx]
 
         adv_batch, rtg_batch = gae_batch(s_batch,a_batch,sp_batch,r_batch,
-            d_batch,neglogp_batch,gamma,lam,correct,is_trunc,actor,critic)
+            d_batch,neglogp_batch,gamma,lam,vtrace,is_trunc,actor,critic)
         adv_all.append(adv_batch)
         rtg_all.append(rtg_batch)
     

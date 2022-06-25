@@ -5,123 +5,83 @@ os.environ['TF_DETERMINISTIC_OPS'] = '1'
 
 from datetime import datetime
 import pickle
+import copy
 import multiprocessing as mp
 import numpy as np
 import tensorflow as tf
 
-from geppo.common.cmd_utils import create_parser
-from geppo.common.initializers import init_seeds, init_env
-from geppo.common.initializers import init_actor, init_critic
-from geppo.common.initializers import import_params
+from geppo.common.cmd_utils import create_parser, gather_inputs, import_inputs
+from geppo.envs import init_env
+from geppo.algs import init_alg, gen_algs
+from geppo.common.initializers import init_seeds, init_actor, init_critic
 from geppo.common.optimize_weights import init_polweights
 from geppo.common.runner import Runner
-
-from geppo.algs import GePPO
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
 
-def gather_inputs(args):
-    """Organizes inputs to prepare for simulations."""
 
-    input_keys = ['save_path','checkpoint_file','save_freq',
-        'ac_seed','sim_seed','env_name','s_normalize','r_normalize',
-        's_t','s_mean','s_var','r_t','r_mean','r_var',
-        'B','M_max','M_targ','uniform',
-        'actor_layers','actor_activations',
-        'actor_gain','actor_std_mult','actor_weights',
-        'critic_layers','critic_activations','critic_gain','critic_weights',
-        'T','gamma','lam','n','is_trunc',
-        'alg_name','sim_size','no_op_batches','ppo_adapt','geppo_noadapt'
-    ]
+def run(inputs_dict):
+    """Runs simulation on given seed.
 
-    args_dict = vars(args)
-    inputs_dict = dict()
-    for key in input_keys:
-        inputs_dict[key] = args_dict[key]
-
-    if args.import_path and args.import_file:
-        setup_dict = import_params(
-            args.import_path,args.import_file,args.import_idx)
-        for key in setup_dict.keys():
-            inputs_dict[key] = setup_dict[key]
-
-    ac_keys = ['critic_lr','adv_center','adv_scale',
-        'actor_lr','actor_opt_type','update_it','nminibatch',
-        'eps_ppo','max_grad_norm',
-        'adapt_factor','adapt_minthresh','adapt_maxthresh',
-        'early_stop','scaleinitlr']
-    ac_kwargs = dict()
-    for key in ac_keys:
-        ac_kwargs[key] = args_dict[key]
-    inputs_dict['ac_kwargs'] = ac_kwargs
-
-    return inputs_dict
-
-def run(idx,save_path,checkpoint_file,save_freq,ac_seed,sim_seed,
-    alg_name,env_name,s_normalize,r_normalize,
-    s_t,s_mean,s_var,r_t,r_mean,r_var,
-    B,M_max,M_targ,uniform,
-    actor_layers,actor_activations,actor_gain,actor_std_mult,actor_weights,
-    critic_layers,critic_activations,critic_gain,critic_weights,
-    T,gamma,lam,n,is_trunc,
-    sim_size,no_op_batches,ppo_adapt,geppo_noadapt,
-    ac_kwargs
-    ):
-    """Runs simulation on given seed. 
+    Args:
+        inputs_dict (dict): dictionary of inputs
     
-    See command line parser for information on inputs.
+    Returns:
+        Name of log file.
     """
 
-    # Save input parameters as dict
-    params = locals()
+    # Unpack inputs
+    setup_kwargs = inputs_dict['setup_kwargs']
+    env_kwargs = inputs_dict['env_kwargs']
+    actor_kwargs = inputs_dict['actor_kwargs']
+    critic_kwargs = inputs_dict['critic_kwargs']
+    polweights_kwargs = inputs_dict['polweights_kwargs']
+    runner_kwargs = inputs_dict['runner_kwargs']
+    alg_kwargs = inputs_dict['alg_kwargs']
+    train_kwargs = inputs_dict['train_kwargs']
+    ac_kwargs = inputs_dict['ac_kwargs']
+
+    alg_kwargs['save_path'] = setup_kwargs['save_path']
+    runner_kwargs['B'] = polweights_kwargs['B']
+
+    ac_seed = setup_kwargs['ac_seed']
+    sim_seed = setup_kwargs['sim_seed']
+    alg_name = alg_kwargs['alg_name']
+    sim_size = train_kwargs['sim_size']
+    no_op_batches = train_kwargs['no_op_batches']
+    B = polweights_kwargs['B']
 
     # Setup
-    env = init_env(env_name,s_normalize,r_normalize,
-        s_t,s_mean,s_var,r_t,r_mean,r_var)
-    
-    init_seeds(ac_seed)
-    actor = init_actor(env,actor_layers,actor_activations,actor_gain,
-        actor_std_mult,actor_weights)
-
-    critic = init_critic(env,critic_layers,critic_activations,critic_gain,
-        critic_weights)
-    
-    polweights, M, eps_mult = init_polweights(alg_name,B,M_max,M_targ,uniform)
-    params['polweights'] = polweights
-    params['M'] = M
+    generalize = (alg_name in gen_algs)
+    polweights, M, eps_mult = init_polweights(generalize,**polweights_kwargs)
+    runner_kwargs['weights'] = polweights
+    runner_kwargs['M'] = M
     ac_kwargs['eps_mult'] = eps_mult
 
-    if alg_name == 'ppo':
-        b_size = B * n
-        if ppo_adapt:
-            ac_kwargs['adaptlr'] = True
-        else:
-            ac_kwargs['adaptlr'] = False
-    else:
-        b_size = n
-        if geppo_noadapt:
-            ac_kwargs['adaptlr'] = False
-        else:
-            ac_kwargs['adaptlr'] = True
-    params['b_size'] = b_size
+    env = init_env(**env_kwargs)
 
-    runner = Runner(T,gamma,lam,b_size,is_trunc,M,polweights)
+    init_seeds(ac_seed)
+    actor = init_actor(env,**actor_kwargs)
+    critic = init_critic(env,**critic_kwargs)
+    runner = Runner(**runner_kwargs)
+    alg = init_alg(sim_seed,env,actor,critic,runner,ac_kwargs,**alg_kwargs)
 
-    alg = GePPO(sim_seed,env,actor,critic,runner,ac_kwargs,
-        idx,save_path,save_freq,checkpoint_file)
-    
     # Training
-    log_name = alg.learn(sim_size,no_op_batches,params)
+    if no_op_batches is None:
+        if M > 1:
+            no_op_batches = B
+        else:
+            no_op_batches = 1
+    log_name = alg.learn(sim_size,no_op_batches,inputs_dict)
 
     return log_name
 
-def run_wrapper(inputs_dict):
-    return run(**inputs_dict)
-
 def main():
     """Parses inputs, runs simulations, saves data."""
+    start_time = datetime.now()
+    
     parser = create_parser()
     args = parser.parse_args()
 
@@ -134,20 +94,23 @@ def main():
         args.runs+args.runs_start)[args.runs_start:]
 
     inputs_list = []
-    for run in range(args.runs):
-        inputs_dict['idx'] = run
+    for idx in range(args.runs):
+        inputs_dict['alg_kwargs']['idx'] = idx
         if args.ac_seed is None:
-            inputs_dict['ac_seed'] = int(ac_seeds[run])
+            inputs_dict['setup_kwargs']['ac_seed'] = int(ac_seeds[idx])
         if args.sim_seed is None:
-            inputs_dict['sim_seed'] = int(sim_seeds[run])
+            inputs_dict['setup_kwargs']['sim_seed'] = int(sim_seeds[idx])
+        
+        if args.import_path and args.import_file:
+            inputs_dict = import_inputs(inputs_dict)
 
-        inputs_list.append({**inputs_dict})
+        inputs_list.append(copy.deepcopy(inputs_dict))
 
     if args.cores is None:
         args.cores = args.runs
 
     with mp.get_context('spawn').Pool(args.cores) as pool:
-        log_names = pool.map(run_wrapper,inputs_list)
+        log_names = pool.map(run,inputs_list)
     
     # Aggregate results
     outputs = []
@@ -162,12 +125,16 @@ def main():
 
     # Save data
     save_env = args.env_name.split('-')[0].lower()
+    if args.task_name is not None:
+        save_env = '%s_%s'%(save_env,args.task_name.lower())
     save_alg = args.alg_name.lower()
     save_date = datetime.today().strftime('%m%d%y_%H%M%S')
     if args.save_file is None:
-        save_file = '%s_%s_%s'%(save_env,save_alg,save_date)
+        save_file = '%s_%s_%s_%s'%(
+            args.env_type,save_env,save_alg,save_date)
     else:
-        save_file = '%s_%s_%s_%s'%(save_env,save_alg,args.save_file,save_date)
+        save_file = '%s_%s_%s_%s_%s'%(
+            args.env_type,save_env,save_alg,args.save_file,save_date)
 
     os.makedirs(args.save_path,exist_ok=True)
     save_filefull = os.path.join(args.save_path,save_file)
@@ -179,6 +146,8 @@ def main():
         filename = os.path.join(args.save_path,log_name)
         os.remove(filename)
 
+    end_time = datetime.now()
+    print('Time Elapsed: %s'%(end_time-start_time))
 
 if __name__=='__main__':
     main()

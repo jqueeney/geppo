@@ -1,4 +1,5 @@
 import numpy as np
+import gym
 
 class RunningNormalizer:
     """Class that tracks running statistics to use for normalization."""
@@ -121,10 +122,13 @@ class NormEnv:
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
 
+        self.observation_dim = gym.spaces.utils.flatdim(self.observation_space)
+        self.action_dim = gym.spaces.utils.flatdim(self.action_space)
+
         self.s_normalize = s_normalize
         self.r_normalize = r_normalize
 
-        self.s_rms = RunningNormalizer(self.observation_space.shape[0])
+        self.s_rms = RunningNormalizer(self.observation_dim)
         self.r_rms = RunningNormalizer(1)
     
     def step(self,a):
@@ -168,15 +172,15 @@ class NormEnv:
 
     def update_rms(self,s_data,r_data):
         """Updates running normalization statistics."""
-        if self.s_normalize:
+        if self.s_normalize and (s_data is not None):
             self.s_rms.update(s_data)
-        if self.r_normalize:
+        if self.r_normalize and (r_data is not None):
             self.r_rms.update(r_data)
 
     def reset_rms(self):
         """Resets running normalization statistics."""
-        self.s_rms = RunningNormalizer(self.observation_space.shape[0])
-        self.r_rms = RunningNormalizer(1)
+        self.s_rms.reset()
+        self.r_rms.reset()
 
     def set_rms(self,s_t,s_mean,s_var,r_t,r_mean,r_var):
         """Sets running normalization statistics from saved values."""

@@ -10,13 +10,14 @@ class Critic:
         """Initializes value function.
 
         Args:
-            env (NormEnv): normalized Gym environment
+            env (NormEnv): normalized environment
             layers (list): list of hidden layer sizes for neural network
             activations (list): list of activations for neural network
             gain (float): multiplicative factor for final layer 
                 initialization
         """        
-        in_dim = env.observation_space.shape[0]
+
+        in_dim = env.observation_dim
         self._nn = create_nn(in_dim,1,layers,activations,gain,name='critic')
 
         self.trainable = self._nn.trainable_variables
@@ -28,7 +29,7 @@ class Critic:
 
     def value(self,s):
         """Calculates value given the state."""
-        return tf.squeeze(self._forward(s))
+        return tf.squeeze(self._forward(s),axis=-1)
 
     def get_weights(self):
         """Returns parameter weights."""

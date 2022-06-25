@@ -93,7 +93,7 @@ def flat_to_list(trainable,weights):
 
     for i in range(len(shapes)):
         elem_flat = weights[idxs[i]:idxs[i+1]]
-        elem = elem_flat.reshape(shapes[i])
+        elem = np.reshape(elem_flat,shapes[i])
         weights_list.append(elem)
     
     return weights_list

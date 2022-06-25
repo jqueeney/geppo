@@ -1,107 +1,110 @@
 import numpy as np
 
-def init_polweights(alg_name,B,M_max,M_targ='ess',uniform=False):
-    """Calculates M, policy weights, and clipping param multiple for GePPO.
+def init_polweights(generalize,B,M_max,tradeoff=1.0,uniform=False,
+    truncate=0.01):
+    """Calculates M, policy weights, and generalized parameter multiple.
     
     Args:
-        alg_name (str): ppo or geppo
-        B (int): multiple of minimum batch size in PPO
+        generalize (bool): if True, consider sample reuse
+        B (int): multiple of minimum batch size in on-policy case
         M_max (int): maximum number of prior policies
-        M_targ (str): what to optimize weights for (tv, ess or mix)
+        tradeoff (float): relative importance of update size vs. ESS in [0,1]
         uniform (bool): if True, use uniform weights
     
     Returns:
         weights (np.ndarray): optimized policy weights
         M (int): number of prior policies
-        eps_mult (float): multiple of PPO clipping parameter to use
+        eps_mult (float): multiple of on-policy penalty parameter to use
     """
-    if alg_name == 'ppo':
+    assert tradeoff >= 0.0, 'tradeoff must be in [0,1]'
+    assert tradeoff <= 1.0, 'tradeoff must be in [0,1]'
+
+    if generalize:
+        if uniform:
+            weights, M, eps_mult = polweights_uniform(B,tradeoff)
+        else:
+            weights, M, eps_mult = polweights_optimal(B,M_max,tradeoff,truncate)
+    else:
         weights = np.ones(1)
         M = 1
-        eps_mult = 1.0
-    else:
-        if uniform:
-            if M_targ == 'tv':
-                M = B
-            elif M_targ == 'ess':
-                M = 2*B - 1
-            elif M_targ == 'mix':
-                M = int(np.ceil(np.mean([B,2*B-1])))
-            else:
-                raise ValueError('M_targ must be tv, ess or mix')
-            
-            weights = np.ones(M) / M
-            eps_mult = 2 / (M+1)
-        else:
-            if M_targ == 'tv':
-                weights = optweights_tv(B,M_max)
-            elif M_targ == 'ess':
-                weights = optweights_ess(B,M_max)
-            elif M_targ == 'mix':
-                weights_tv = optweights_tv(B,M_max)
-                weights_ess = optweights_ess(B,M_max)
-                weights = 0.5 * weights_tv + 0.5 * weights_ess
-            else:
-                raise ValueError('M_targ must be tv, ess or mix')
-
-            active = weights > 0.01
-            weights = weights[active]
-            weights = weights / np.sum(weights)
-
-            increase = np.arange(M_max) + 1
-            eps_mult = 1 / np.dot(weights,increase[active])
-            M = len(weights)
+        eps_mult = 1.0        
     
     return weights, M, eps_mult
 
-def optweights_tv(B,M_max):
-    """Finds optimal weights to maximize total variation distance."""
+def polweights_uniform(B,tradeoff):
+    """Finds optimal uniform policy weights."""
+
+    M_min = B
+    M_max = 2 * B - 1
+    
+    M_all = np.arange(M_max-M_min+1) + M_min
+
+    ess_val = (1/M_all - 1/M_max) / (1/M_min - 1/M_max)
+    tv_val = (M_all - M_min) / (M_max - M_min)
+
+    M = np.argmin(tradeoff*ess_val+(1-tradeoff)*tv_val) + M_min
+
+    weights = np.ones(M) / M
+
+    eps_mult = 2 / (M+1)
+
+    return weights, M, eps_mult
+
+def polweights_optimal(B,M_max,tradeoff,truncate=0.01):
+    """Finds optimal policy weights."""
     import gurobipy as gp
 
     ones = np.ones(M_max)
     increase = np.arange(M_max) + 1
 
-    m_tv = gp.Model()
-    m_tv.Params.OutputFlag = 0
+    # Normalize objective
+    if tradeoff > 0.0 and tradeoff < 1.0:
+        # Recursively call without objective normalization or truncation
+        weights_tv, _, _ = polweights_optimal(B,M_max,0.0,0.0)
+        weights_ess, _, _ = polweights_optimal(B,M_max,1.0,0.0)
 
-    p_tv = m_tv.addMVar((M_max,),name='weights')
+        tv_min = np.dot(increase,weights_tv)
+        tv_max = B
 
-    m_tv.setObjective(increase @ p_tv)
+        ess_min = np.sum(np.square(weights_ess))
+        ess_max = 1/B
 
-    m_tv.addConstr(ones @ p_tv == 1)
-    m_tv.addConstr(p_tv @ p_tv <= (1/B))
+        objweight_ess = tradeoff / (ess_max - ess_min)
+        objweight_tv = (1-tradeoff) / (tv_max - tv_min)
+    else:
+        objweight_ess = tradeoff
+        objweight_tv = (1-tradeoff)
 
-    m_tv.optimize()
-    if m_tv.Status != 2:
+    # Optimize weights
+    obj_tv = objweight_tv * increase
+    obj_ess = np.identity(M_max) * objweight_ess
+
+    model = gp.Model()
+    model.Params.OutputFlag = 0
+
+    p_opt = model.addMVar((M_max,),name='weights')
+
+    model.setObjective(p_opt @ obj_ess @ p_opt + obj_tv @ p_opt)
+
+    model.addConstr(ones @ p_opt == 1)
+    model.addConstr(increase @ p_opt <= B)
+    model.addConstr(p_opt @ p_opt <= (1/B))
+
+    model.optimize()
+    if model.Status != 2:
         raise ValueError(
-            'Gurobi unable to find optimal weights (status %d)'%m_tv.Status)
-    
-    weights = p_tv.X
+            'Gurobi unable to find optimal weights (status %d)'%model.Status)
 
-    return weights
+    weights = p_opt.X
 
-def optweights_ess(B,M_max):
-    """Finds optimal weights to maximize effective sample size (ESS)."""
-    import gurobipy as gp
-    
-    ones = np.ones(M_max)
-    increase = np.arange(M_max) + 1
+    # Truncate weights and calculate relevant quantities
+    active = weights > truncate
+    weights = weights[active]
+    weights = weights / np.sum(weights)
 
-    m_ess = gp.Model()
-    m_ess.Params.OutputFlag = 0
+    eps_mult = 1 / np.dot(weights,increase[active])
+        
+    M = len(weights)
 
-    p_ess = m_ess.addMVar((M_max,),name='weights')
+    return weights, M, eps_mult
 
-    m_ess.setObjective(p_ess @ p_ess)
-
-    m_ess.addConstr(ones @ p_ess == 1)
-    m_ess.addConstr(increase @ p_ess == B)
-
-    m_ess.optimize()
-    if m_ess.Status != 2:
-        raise ValueError(
-            'Gurobi unable to find optimal weights (status %d)'%m_ess.Status)
-
-    weights = p_ess.X
-
-    return weights

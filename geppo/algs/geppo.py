@@ -7,11 +7,11 @@ class GePPO(BaseAlg):
     """Algorithm class for GePPO. PPO is a special case."""
 
     def __init__(self,seed,env,actor,critic,runner,ac_kwargs,
-        idx,save_path,save_freq,checkpoint_file):
+        idx,save_path,save_freq,checkpoint_file,keep_checkpoints):
         """Initializes GePPO class. See BaseAlg for details."""
 
         super(GePPO,self).__init__(seed,env,actor,critic,runner,ac_kwargs,
-            idx,save_path,save_freq,checkpoint_file)
+            idx,save_path,save_freq,checkpoint_file,keep_checkpoints)
 
         self._ac_setup()
 
@@ -21,32 +21,32 @@ class GePPO(BaseAlg):
         self.critic_optimizer = tf.keras.optimizers.Adam(
             learning_rate=self.critic_lr)
 
-        self.adv_center = self.ac_kwargs['adv_center']
-        self.adv_scale = self.ac_kwargs['adv_scale']
         self.actor_lr = self.ac_kwargs['actor_lr']
-        if self.ac_kwargs['scaleinitlr']:
+        if self.ac_kwargs['scaleinitlr_dim']:
+            self.actor_lr = self.actor_lr / self.env.action_dim
+        if self.ac_kwargs['scaleinitlr_eps']:
             self.actor_lr = self.actor_lr * self.ac_kwargs['eps_mult']
-        self.actor_opt_type = self.ac_kwargs['actor_opt_type']
+        self.actor_optimizer = tf.keras.optimizers.Adam(
+            learning_rate=self.actor_lr)
+
         self.update_it = self.ac_kwargs['update_it']
         self.nminibatch = self.ac_kwargs['nminibatch']
-        self.eps = self.ac_kwargs['eps_ppo'] * self.ac_kwargs['eps_mult']
         self.max_grad_norm = self.ac_kwargs['max_grad_norm']
+
+        self.adv_center = self.ac_kwargs['adv_center']
+        self.adv_scale = self.ac_kwargs['adv_scale']
+        self.adv_clip = self.ac_kwargs['adv_clip']
         
-        self.adaptlr = self.ac_kwargs['adaptlr']
+        self.eps_ppo = self.ac_kwargs['eps_ppo']
+        self.eps = self.eps_ppo * self.ac_kwargs['eps_mult']
+        self.eps_vary = self.ac_kwargs['eps_vary']
+        
+        self.adapt_lr = self.ac_kwargs['adapt_lr']
         self.adapt_factor = self.ac_kwargs['adapt_factor']
         self.adapt_minthresh = self.ac_kwargs['adapt_minthresh']
         self.adapt_maxthresh = self.ac_kwargs['adapt_maxthresh']
 
         self.early_stop = self.ac_kwargs['early_stop']
-
-        if self.actor_opt_type == 'Adam':
-            self.actor_optimizer = tf.keras.optimizers.Adam(
-                learning_rate=self.actor_lr)
-        elif self.actor_opt_type == 'SGD':
-            self.actor_optimizer = tf.keras.optimizers.SGD(
-                learning_rate=self.actor_lr)
-        else:
-            raise ValueError('actor_opt_type must be Adam or SGD')
     
     def _get_neg_pg(self,s_active,a_active,adv_active,neglogp_old_active,
         weights_active):
@@ -60,7 +60,7 @@ class GePPO(BaseAlg):
             weights_active (np.ndarray): policy weights
         
         Returns:
-            Negative gradient of policy objective w.r.t. policy parameters.
+            Policy objective and negative gradient w.r.t. policy parameters.
         """
 
         neglogp_pik_active = self.actor.neglogp_pik(s_active,a_active)
@@ -71,9 +71,11 @@ class GePPO(BaseAlg):
         adv_std = np.std(offpol_ratio * weights_active * adv_active) + 1e-8
 
         if self.adv_center:
-            adv_active = adv_active - adv_mean 
+            adv_active = adv_active - adv_mean
         if self.adv_scale:
             adv_active = adv_active / adv_std
+        if self.adv_clip:
+            adv_active = np.clip(adv_active,-self.adv_clip,self.adv_clip)
 
         with tf.GradientTape() as tape:
             neglogp_cur_active = self.actor.neglogp(s_active,a_active)
@@ -85,25 +87,33 @@ class GePPO(BaseAlg):
             pg_loss_clip = ratio_clip * adv_active * -1
             pg_loss = tf.reduce_mean(
                 tf.maximum(pg_loss_surr,pg_loss_clip)*weights_active)
-        
+
         neg_pg = tape.gradient(pg_loss,self.actor.trainable)
         
-        return neg_pg
+        return pg_loss, neg_pg
 
     def _update(self):
         """Updates actor and critic."""
         data_all = self.runner.get_update_info(self.actor,self.critic)
-        s_all, a_all, adv_all, rtg_all, neglogp_old_all, weights_all = data_all
+        (s_all, a_all, adv_all, rtg_all, neglogp_old_all, kl_info_all, 
+            weights_all) = data_all
         n_samples = s_all.shape[0]
         n_batch = int(n_samples / self.nminibatch)
 
-        ent = tf.reduce_mean(self.actor.entropy(s_all))
+        ent = tf.reduce_mean(weights_all * self.actor.entropy(s_all))
         kl_info_ref = self.actor.get_kl_info(s_all)
 
+        pg_loss_all = 0
         pg_norm_all_pre = 0
         pg_norm_all = 0
         v_loss_all = 0
         vg_norm_all = 0
+        
+        if self.eps_vary:
+            neglogp_pik_all = self.actor.neglogp_pik(s_all,a_all)
+            offpol_ratio = tf.exp(neglogp_old_all - neglogp_pik_all)
+            eps_old = tf.reduce_mean(weights_all * tf.abs(offpol_ratio-1.))
+            self.eps = np.maximum(self.eps_ppo - eps_old,0.0)
 
         # Minibatch update loop for actor and critic
         for sweep_it in range(self.update_it):
@@ -138,8 +148,8 @@ class GePPO(BaseAlg):
                 vg_norm_all += tf.linalg.global_norm(vg)
 
                 # Actor update
-                neg_pg = self._get_neg_pg(s_active,a_active,
-                    adv_active,neglogp_old_active,weights_active)
+                pg_loss, neg_pg = self._get_neg_pg(s_active,a_active,adv_active,
+                    neglogp_old_active,weights_active)
                 
                 if self.max_grad_norm is not None:
                     neg_pg, pg_norm_pre = tf.clip_by_global_norm(
@@ -147,9 +157,11 @@ class GePPO(BaseAlg):
                 else:
                     pg_norm_pre = tf.linalg.global_norm(neg_pg)
                 
-                self.actor_optimizer.apply_gradients(
-                    zip(neg_pg,self.actor.trainable))
+                if self.eps > 0:
+                    self.actor_optimizer.apply_gradients(
+                        zip(neg_pg,self.actor.trainable))
                 
+                pg_loss_all += pg_loss
                 pg_norm_all_pre += pg_norm_pre
                 pg_norm_all += tf.linalg.global_norm(neg_pg)
 
@@ -158,13 +170,20 @@ class GePPO(BaseAlg):
             ratio = tf.exp(neglogp_old_all - neglogp_cur_all)
             clip_center = tf.exp(neglogp_old_all - neglogp_pik_all)
             ratio_diff = tf.abs(ratio - clip_center)
+            
             tv = 0.5 * tf.reduce_mean(weights_all * ratio_diff)
             pen = 0.5 * tf.reduce_mean(weights_all * tf.abs(ratio-1.))
+
+            # Early stopping
             if self.early_stop and (tv > (0.5*self.eps)):
                 break
 
+        pg_loss_ave = pg_loss_all.numpy() / ((sweep_it+1)*len(batches))
         pg_norm_ave_pre = pg_norm_all_pre.numpy() / ((sweep_it+1)*len(batches))
         pg_norm_ave = pg_norm_all.numpy() / ((sweep_it+1)*len(batches))
+
+        pg_loss_final, _ = self._get_neg_pg(s_all,a_all,adv_all,neglogp_old_all,
+            weights_all)
 
         v_loss_ave = v_loss_all.numpy() / ((sweep_it+1)*len(batches))
         vg_norm_ave = vg_norm_all.numpy() / ((sweep_it+1)*len(batches))
@@ -175,30 +194,43 @@ class GePPO(BaseAlg):
         }
         self.logger.log_train(log_critic)
         
-        kl = tf.reduce_mean(self.actor.kl(s_all,kl_info_ref))
+        kl = tf.reduce_mean(weights_all * self.actor.kl(s_all,kl_info_ref))
+        pen_kl = tf.reduce_mean(weights_all * self.actor.kl(
+            s_all,kl_info_all))
 
+        kl_reverse = tf.reduce_mean(weights_all * self.actor.kl(
+            s_all,kl_info_ref,direction='reverse'))
+        pen_kl_reverse = tf.reduce_mean(weights_all * self.actor.kl(
+            s_all,kl_info_all,direction='reverse'))     
+        
         log_actor = {
-            'pg_norm_pre':      pg_norm_ave_pre,
-            'pg_norm':          pg_norm_ave,
-            'ent':              ent.numpy(),
-            'kl':               kl.numpy(),
-            'tv':               tv.numpy(),
-            'penalty':          pen.numpy(),
-            'outside_clip':     np.mean(ratio_diff > self.eps),
-            'actor_sweeps':     sweep_it + 1,
-            'actor_lr':         self.actor_optimizer.learning_rate.numpy()
+            'pg_loss':              pg_loss_ave,
+            'pg_loss_final':        pg_loss_final.numpy(),
+            'pg_norm_pre':          pg_norm_ave_pre,
+            'pg_norm':              pg_norm_ave,
+            'ent':                  ent.numpy(),
+            'tv':                   tv.numpy(),
+            'kl':                   kl.numpy(),
+            'kl_reverse':           kl_reverse.numpy(),
+            'penalty':              pen.numpy(),
+            'penalty_kl':           pen_kl.numpy(),
+            'penalty_kl_reverse':   pen_kl_reverse.numpy(),
+            'outside_clip':         np.mean(ratio_diff > self.eps),
+            'actor_sweeps':         sweep_it + 1,
+            'actor_lr':             self.actor_optimizer.learning_rate.numpy(),
+            'eps':                  self.eps,
         }
         self.logger.log_train(log_actor)
         
         self.actor.update_pik_weights()
 
         # Adapt learning rate
-        if self.adaptlr:
-            if tv > (self.adapt_maxthresh * 0.5 * self.eps):
+        if self.adapt_lr:
+            if tv > (self.adapt_maxthresh * (0.5*self.eps)):
                 lr_new = (self.actor_optimizer.learning_rate.numpy() / 
                     (1+self.adapt_factor))
                 self.actor_optimizer.learning_rate.assign(lr_new)
-            elif tv < (self.adapt_minthresh * 0.5 * self.eps):
+            elif tv < (self.adapt_minthresh * (0.5*self.eps)):
                 lr_new = (self.actor_optimizer.learning_rate.numpy() * 
                     (1+self.adapt_factor))
                 self.actor_optimizer.learning_rate.assign(lr_new)

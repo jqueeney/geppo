@@ -15,10 +15,8 @@ def main():
         args.import_path,args.ppo_file,x,args.window,args.metric)
     geppo_data = open_and_aggregate(
         args.import_path,args.geppo_file,x,args.window,args.metric)
-    ppo_adapt_data = open_and_aggregate(
-        args.import_path,args.ppo_adapt_file,x,args.window,args.metric)
 
-    plot_compare(ppo_data,geppo_data,ppo_adapt_data,
+    plot_compare(ppo_data,geppo_data,
         x,args.se_val,args.save_path,args.save_name)
 
 
