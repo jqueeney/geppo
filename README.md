@@ -1,6 +1,6 @@
 # Generalized Proximal Policy Optimization with Sample Reuse
 
-This repository is the official implementation of the reinforcement learning algorithm Generalized Proximal Policy Optimization with Sample Reuse (GePPO), which was introduced in the [NeurIPS 2021 paper](https://proceedings.neurips.cc/paper/2021/hash/63c4b1baf3b4460fa9936b1a20919bec-Abstract.html) with the same name.
+This repository is the official implementation of the reinforcement learning algorithm Generalized Proximal Policy Optimization with Sample Reuse (GePPO), which was introduced in the [NeurIPS 2021 paper](https://proceedings.neurips.cc/paper/2021/hash/63c4b1baf3b4460fa9936b1a20919bec-Abstract.html) with the same name. Any future code updates will appear in [this repository](https://github.com/jqueeney/gpi), which contains implementations of several [Generalized Policy Improvement algorithms](https://arxiv.org/abs/2206.13714) including GePPO.
 
 GePPO improves the sample efficiency of the popular on-policy algorithm PPO through principled sample reuse, while still retaining PPO's approximate policy improvement guarantees. GePPO is theoretically supported by a generalized policy improvement lower bound that can be approximated using data from all recent policies.
 
@@ -9,9 +9,9 @@ Please consider citing our paper as follows:
 ```
 @inproceedings{queeney_2021_geppo,
  author = {Queeney, James and Paschalidis, Ioannis Ch. and Cassandras, Christos G.},
+ title = {Generalized Proximal Policy Optimization with Sample Reuse},
  booktitle = {Advances in Neural Information Processing Systems},
  publisher = {Curran Associates, Inc.},
- title = {Generalized Proximal Policy Optimization with Sample Reuse},
  volume = {34},
  year = {2021}
 }
